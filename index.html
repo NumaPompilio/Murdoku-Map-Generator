@@ -2750,7 +2750,7 @@ function importFromMurdokuText(txt){
   // la calpestabilità dalla legenda testuale "(ostacolo)"/"(calpestabile)",
   // dato che il blocco MURDOKU_STATE_B64 non la contiene esplicitamente.
   // Le celle il cui oggetto è un ostacolo diventano "non calpestabili" di
-  // default (intensità overlay 15), in unione a quelle già marcate a mano.
+  // default (intensità overlay 15).
   const legend = parseMurdokuObjectsLegend(txt);
   const prevBySlug = new Map(state.objects.list.map(o => [o.slug, o]));
   const bySlug = new Map();
@@ -2764,9 +2764,13 @@ function importFromMurdokuText(txt){
     if (!bySlug.has(slug)) bySlug.set(slug, []);
     bySlug.get(slug).push([r,c]);
   }
-  // Rimuove le icone auto-piazzate dell'import precedente: verranno
-  // ricreate in base alle assegnazioni icona mantenute per slug.
-  state.icons.placed = state.icons.placed.filter(p => !p.objSlug);
+  // Ripulisce completamente le icone piazzate e le celle non calpestabili
+  // della mappa precedente: dopo l'import deve restare visibile solo ciò
+  // che appartiene alla nuova mappa. Le assegnazioni icona per slug restano
+  // comunque disponibili tramite prevBySlug qui sopra.
+  state.icons.placed = [];
+  state.icons.selectedId = null;
+  state.nonWalkable = new Set();
   const newObjects = [];
   for (const [slug, cells] of bySlug){
     const info = legend[slug];
