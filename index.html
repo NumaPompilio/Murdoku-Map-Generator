@@ -221,6 +221,10 @@
           Ancora a cella
         </label>
       </div>
+      <div class="field" style="margin-top:10px">
+        <label>Luminosità icone: <span class="val" id="iconShadeVal">50</span></label>
+        <input type="range" id="iconShadeRange" min="0" max="100" step="1" value="50">
+      </div>
       <div class="icon-library" id="iconLibrary">
         <div class="icon-empty">Trascina qui, carica o incolla immagini (SVG, PNG, WebP, JPEG) o file .zip.</div>
       </div>
@@ -280,6 +284,10 @@
           <input type="text" id="colorText" value="#f4efe4" style="max-width:110px; font-family:var(--mono); font-size:12px">
           <button class="btn" id="btnApplyColor">Applica</button>
         </div>
+      </div>
+      <div class="field" style="margin-top:14px; margin-bottom:0">
+        <label>Gradazione: <span class="val" id="areaShadeVal">50</span></label>
+        <input type="range" id="areaShadeRange" min="0" max="100" step="1" value="50" disabled>
       </div>
       <div class="field" style="margin-top:14px">
         <label>Sfondi personalizzati</label>
@@ -423,6 +431,7 @@ const state = {
   size: 8,
   walls: new Set(),        // "r1,c1|r2,c2" con A<B lessicograficamente (solo edge interni)
   areaFills: {},           // signature area -> {type:'color'|'svg', value:string}
+  areaShades: {},          // signature area -> 0-100 (50=default, 0=bianco, 100=nero)
   nonWalkable: new Set(),  // "r,c" celle marcate come non calpestabili
   selectedAreaSig: null,   // signature dell'ultima area cliccata
   selectedCell: null,      // {r,c} cella selezionata via doppio click
@@ -442,6 +451,7 @@ const state = {
     selectedId: null,      // id dell'icona posizionata attualmente selezionata
     snap: true,            // ancora al centro della cella
     unit: "%",             // unità di default per nuove icone
+    shade: 50,             // gradazione globale icone (50=default, 0=bianco, 100=nero)
     nextLib: 1,
     nextPlaced: 1,
   },
@@ -518,11 +528,14 @@ function areaSignature(cells){
 function remapAreaFillsAfterTopologyChange(){
   const an = computeAreas();
   const newFills = {};
+  const newShades = {};
   for (const a of an.areas){
     const sig = areaSignature(a.cells);
     if (state.areaFills[sig]) newFills[sig] = state.areaFills[sig];
+    if (state.areaShades[sig] != null) newShades[sig] = state.areaShades[sig];
   }
   state.areaFills = newFills;
+  state.areaShades = newShades;
   // Se l'area selezionata non esiste più, azzero
   if (state.selectedAreaSig && !newFills[state.selectedAreaSig]){
     // può ancora esistere anche senza fill: ricontrolla
@@ -533,6 +546,18 @@ function remapAreaFillsAfterTopologyChange(){
 
 /* Colore fallback per un'area (se non ha fill esplicito): paper. */
 function defaultAreaColor(){ return "var(--paper)"; }
+
+/* Gradazione (0-100, 50=default) dello sfondo di un'area: 0=bianco, 100=nero. */
+function getAreaShade(sig){
+  const v = state.areaShades[sig];
+  return typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(100, v)) : 50;
+}
+
+/* Gradazione (0-100, 50=default) globale delle icone: 0=bianco, 100=nero. */
+function getIconShade(){
+  const v = state.icons.shade;
+  return typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(100, v)) : 50;
+}
 
 /* =====================================================================
    RENDER
@@ -585,17 +610,26 @@ function buildSvg(forExport=false){
   const sizeAttrs = forExport ? ` width="${W}" height="${H}"` : "";
   s += `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}"${sizeAttrs}>`;
 
-  // <defs> con i pattern
-  if (patternDefs.length){
-    s += `<defs>`;
-    for (const pd of patternDefs){
-      // pattern che riempie una cella intera, ripetuto per cella
-      s += `<pattern id="${pd.id}" patternUnits="userSpaceOnUse" x="${PAD}" y="${PAD}" width="${CS}" height="${CS}">`;
-      s += `<image href="${pd.dataUri}" x="0" y="0" width="${CS}" height="${CS}" preserveAspectRatio="xMidYMid slice"/>`;
-      s += `</pattern>`;
-    }
-    s += `</defs>`;
+  // <defs> con i pattern e il filtro di gradazione icone
+  const iconShade = getIconShade();
+  let defsContent = "";
+  for (const pd of patternDefs){
+    // pattern che riempie una cella intera, ripetuto per cella
+    defsContent += `<pattern id="${pd.id}" patternUnits="userSpaceOnUse" x="${PAD}" y="${PAD}" width="${CS}" height="${CS}">`;
+    defsContent += `<image href="${pd.dataUri}" x="0" y="0" width="${CS}" height="${CS}" preserveAspectRatio="xMidYMid slice"/>`;
+    defsContent += `</pattern>`;
   }
+  if (iconShade !== 50){
+    // Sfuma i colori dell'icona verso bianco (shade<50) o nero (shade>50),
+    // preservando la trasparenza (riga alpha identità).
+    const t = Math.abs(iconShade - 50) / 50;
+    const target = iconShade < 50 ? t : 0;
+    const k = 1 - t;
+    defsContent += `<filter id="iconShadeFilter" color-interpolation-filters="sRGB">`
+      + `<feColorMatrix type="matrix" values="${k} 0 0 0 ${target} 0 ${k} 0 0 ${target} 0 0 ${k} 0 ${target} 0 0 0 1 0"/>`
+      + `</filter>`;
+  }
+  if (defsContent) s += `<defs>${defsContent}</defs>`;
 
   // sfondo esterno (fascia con i numeri): visibile solo on-screen; trasparente in export.
   if (!forExport){
@@ -618,6 +652,14 @@ function buildSvg(forExport=false){
     }
     const cls = forExport ? "" : ` class="cell" data-r="${r}" data-c="${c}"`;
     s += `<rect${cls} x="${x}" y="${y}" width="${CS}" height="${CS}" fill="${f}"${strokeAttr}/>`;
+    // Gradazione sfondo stanza: overlay bianco/nero semi-trasparente
+    // (50=nessun effetto, 0=bianco pieno, 100=nero pieno).
+    const shade = getAreaShade(sig);
+    if (shade !== 50){
+      const lighten = shade < 50;
+      const alpha = Math.abs(shade - 50) / 50;
+      s += `<rect x="${x}" y="${y}" width="${CS}" height="${CS}" fill="${lighten ? "#fff" : "#000"}" opacity="${alpha}" pointer-events="none"/>`;
+    }
   }
 
   // Overlay per celle "non calpestabili" (leggermente più scuro).
@@ -719,7 +761,8 @@ function buildSvg(forExport=false){
       s += `<rect x="${x-3}" y="${y-3}" width="${sizePx+6}" height="${sizePx+6}" fill="none" stroke="#8a6bff" stroke-width="1.5" stroke-dasharray="4 3" pointer-events="none"/>`;
     }
     const attrs = forExport ? "" : ` class="picon" data-pid="${ic.id}" style="cursor:move"`;
-    s += `<image${attrs} href="${lib.dataUri}" x="${x}" y="${y}" width="${sizePx}" height="${sizePx}" preserveAspectRatio="xMidYMid meet"/>`;
+    const filterAttr = iconShade !== 50 ? ` filter="url(#iconShadeFilter)"` : "";
+    s += `<image${attrs}${filterAttr} href="${lib.dataUri}" x="${x}" y="${y}" width="${sizePx}" height="${sizePx}" preserveAspectRatio="xMidYMid meet"/>`;
   }
 
   s += `</svg>`;
@@ -1039,6 +1082,14 @@ function updatePaintCardUI(){
     const idx = an.areas.findIndex(a => areaSignature(a.cells) === state.selectedAreaSig);
     const cellCount = idx>=0 ? an.areas[idx].cells.length : 0;
     lbl.textContent = `Stanza ${idx+1} · ${cellCount} celle`;
+  }
+  const shadeRange = $("#areaShadeRange");
+  const shadeVal = $("#areaShadeVal");
+  if (shadeRange && shadeVal){
+    const shade = state.selectedAreaSig ? getAreaShade(state.selectedAreaSig) : 50;
+    shadeRange.value = shade;
+    shadeVal.textContent = shade;
+    shadeRange.disabled = !state.selectedAreaSig;
   }
   // Swatch attivo (solo la palette della card "Colorazione stanza")
   $$("#swatches .sw").forEach(el => {
@@ -1529,6 +1580,7 @@ function setSize(n){
   state.size = n;
   state.walls = new Set();
   state.areaFills = {};
+  state.areaShades = {};
   state.nonWalkable = new Set();
   state.selectedAreaSig = null;
   state.selectedCell = null;
@@ -1713,6 +1765,7 @@ function serializeState(){
     size: state.size,
     walls: [...state.walls],
     areaFills: state.areaFills,
+    areaShades: state.areaShades,
     nonWalkable: [...state.nonWalkable],
     style: { ...state.style },
     icons: {
@@ -1720,6 +1773,7 @@ function serializeState(){
       placed: state.icons.placed,
       snap: state.icons.snap,
       unit: state.icons.unit,
+      shade: state.icons.shade,
     },
     bg: {
       library: state.bg.library,
@@ -1832,6 +1886,7 @@ function loadJsonPayload(obj, silent=false){
   state.size = n;
   state.walls = new Set((obj.walls||[]).filter(k => typeof k === "string"));
   state.areaFills = obj.areaFills && typeof obj.areaFills === "object" ? obj.areaFills : {};
+  state.areaShades = obj.areaShades && typeof obj.areaShades === "object" ? obj.areaShades : {};
   state.nonWalkable = new Set(Array.isArray(obj.nonWalkable) ? obj.nonWalkable.filter(k => typeof k === "string") : []);
   state.selectedCell = null;
   // Ripristina i default per le chiavi assenti nel file (importante per
@@ -1869,6 +1924,10 @@ function loadJsonPayload(obj, silent=false){
     }
     state.icons.snap = obj.icons.snap !== false;
     state.icons.unit = obj.icons.unit === "px" ? "px" : "%";
+    const sh = obj.icons.shade;
+    state.icons.shade = typeof sh === "number" && isFinite(sh) ? Math.max(0, Math.min(100, sh)) : 50;
+  } else {
+    state.icons.shade = 50;
   }
   // Libreria sfondi
   state.bg.library = [];
@@ -1881,6 +1940,8 @@ function loadJsonPayload(obj, silent=false){
   state.selectedAreaSig = null;
   syncStyleControls();
   $("#snapToggle").checked = state.icons.snap;
+  $("#iconShadeRange").value = state.icons.shade;
+  $("#iconShadeVal").textContent = state.icons.shade;
   $("#sizeVal").textContent = n;
   $("#sizeRange").value = n;
   renderIconLibrary();
@@ -1961,6 +2022,7 @@ function importFromMurdokuText(txt){
   // aree con la nostra logica (identica a quella del Murdoku) e mappiamo per id
   // per convertire da areaFloors {id: {type,value}} a areaFills {sig: {type,value}}.
   state.areaFills = {};
+  state.areaShades = {};
   const an = computeAreas();
   const idToSig = an.areas.map(a => areaSignature(a.cells));
   const murdokuFloors = json.areaFloors || {};
@@ -2028,6 +2090,13 @@ function bindEvents(){
     $("#colorText").value = v;
     applyFillToSelected({ type: "color", value: v });
   });
+  $("#areaShadeRange").addEventListener("input", e => {
+    if (!state.selectedAreaSig) return;
+    pushHistoryDebounced();
+    state.areaShades[state.selectedAreaSig] = +e.target.value;
+    $("#areaShadeVal").textContent = e.target.value;
+    render();
+  });
 
   // Libreria sfondi
   $("#btnLoadBgs").addEventListener("click", () => $("#bgFile").click());
@@ -2081,6 +2150,12 @@ function bindEvents(){
   $("#btnPasteIcon").addEventListener("click", pasteIconFromClipboard);
   $("#snapToggle").addEventListener("change", e => {
     state.icons.snap = !!e.target.checked;
+  });
+  $("#iconShadeRange").addEventListener("input", e => {
+    pushHistoryDebounced();
+    state.icons.shade = +e.target.value;
+    $("#iconShadeVal").textContent = e.target.value;
+    render();
   });
   $("#iconSizeRange").addEventListener("input", e => {
     const id = state.icons.selectedId;
@@ -2137,6 +2212,7 @@ function bindEvents(){
     if (!state.selectedAreaSig){ toast("Seleziona prima una stanza."); return; }
     pushHistoryNow();
     delete state.areaFills[state.selectedAreaSig];
+    delete state.areaShades[state.selectedAreaSig];
     render();
   });
 
@@ -2168,6 +2244,7 @@ function bindEvents(){
     if (!confirm("Rimuovere tutti gli sfondi delle stanze?")) return;
     pushHistoryNow();
     state.areaFills = {};
+    state.areaShades = {};
     render();
   });
   $("#btnClearAll").addEventListener("click", () => {
@@ -2175,13 +2252,17 @@ function bindEvents(){
     pushHistoryNow();
     state.walls = new Set();
     state.areaFills = {};
+    state.areaShades = {};
     state.nonWalkable = new Set();
     state.selectedAreaSig = null;
     state.selectedCell = null;
     state.icons.library = [];
     state.icons.placed = [];
     state.icons.selectedId = null;
+    state.icons.shade = 50;
     state.bg.library = [];
+    $("#iconShadeRange").value = 50;
+    $("#iconShadeVal").textContent = 50;
     renderIconLibrary();
     renderBgLibrary();
     updateIconSelectionUI();
