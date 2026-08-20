@@ -193,6 +193,7 @@
     <button class="btn ghost" id="btnLoadJSON" title="Carica una mappa salvata (.json)"><span class="k">📂</span> Carica Mappa</button>
     <button class="btn ghost" id="btnSaveJSON" title="Salva la mappa corrente in JSON"><span class="k">💾</span> Salva Mappa</button>
     <button class="btn primary" id="btnExportImage" title="Esporta la mappa come immagine (PNG o SVG)"><span class="k">⇩</span> Esporta Immagine</button>
+    <button class="btn ghost" id="btnExportGrid" title="Esporta solo la griglia (bordi, muri, linee, numeri) in PNG x8"><span class="k">🔲</span> Esporta Griglia</button>
   </div>
 </header>
 
@@ -426,6 +427,23 @@
     <div class="mf">
       <button class="btn ghost" data-close-modal>Annulla</button>
       <button class="btn primary" id="btnDoExport">Scarica</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="gridExportModal">
+  <div class="box">
+    <div class="mh"><h3>Esporta griglia</h3></div>
+    <div class="mb">
+      <div class="field" style="margin:0">
+        <label for="gridExportFilename">Nome del file</label>
+        <input type="text" id="gridExportFilename" placeholder="griglia" spellcheck="false" autocomplete="off">
+        <div class="hint">Estensione <code>.png</code> aggiunta automaticamente (risoluzione 8×).</div>
+      </div>
+    </div>
+    <div class="mf">
+      <button class="btn ghost" data-close-modal>Annulla</button>
+      <button class="btn primary" id="btnDoExportGrid">Scarica</button>
     </div>
   </div>
 </div>
@@ -792,6 +810,93 @@ function buildSvg(forExport=false){
 
   s += `</svg>`;
   return { svg: s, width: W, height: H };
+}
+
+/* Costruisce l'SVG per "Esporta Griglia": solo bordi/muri/linee/numeri in
+   nero e celle non calpestabili/calpestabili, con stili fissi indipendenti
+   da quelli scelti dall'utente per la mappa a schermo (niente sfondi,
+   icone o gradazioni). */
+function buildGridSvg(){
+  const N = state.size;
+  const CS = cellSize();
+  const FS = 14;
+  const WALL_W = 5;
+  const BORDER_W = 5;
+  const GRID_W = 1;
+  const GRID_COL = "#000000";
+  const PAD = paddingFor(FS);
+  const W = PAD + N*CS + PAD;
+  const H = PAD + N*CS + PAD;
+
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`;
+
+  // celle: bianche, grigie (#8f8f8f) se non calpestabili
+  const strokeAttr = ` stroke="${GRID_COL}" stroke-width="${GRID_W}"`;
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++){
+    const x = PAD + c*CS, y = PAD + r*CS;
+    const isNonWalk = state.nonWalkable.has(`${r},${c}`);
+    s += `<rect x="${x}" y="${y}" width="${CS}" height="${CS}" fill="${isNonWalk ? "#8f8f8f" : "#ffffff"}"${strokeAttr}/>`;
+  }
+
+  // muri interni
+  s += `<g stroke="#000000" stroke-width="${WALL_W}" stroke-linecap="round">`;
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++){
+    const x = PAD + c*CS, y = PAD + r*CS;
+    if (c+1<N && state.walls.has(wallKey(r,c,r,c+1)))
+      s += `<line x1="${x+CS}" y1="${y}" x2="${x+CS}" y2="${y+CS}"/>`;
+    if (r+1<N && state.walls.has(wallKey(r,c,r+1,c)))
+      s += `<line x1="${x}" y1="${y+CS}" x2="${x+CS}" y2="${y+CS}"/>`;
+  }
+  s += `</g>`;
+
+  // perimetro esterno
+  s += `<rect x="${PAD}" y="${PAD}" width="${N*CS}" height="${N*CS}" fill="none" stroke="#000000" stroke-width="${BORDER_W}" rx="3"/>`;
+
+  // numeri riga/colonna
+  const topY = PAD - Math.max(6, Math.round(FS * 0.55));
+  const leftX = PAD - Math.max(8, Math.round(FS * 0.85));
+  const leftDy = Math.round(FS * 0.36);
+  s += `<g font-family="ui-monospace, SF Mono, Menlo, Consolas, monospace" font-size="${FS}" fill="#000000" text-anchor="middle" font-weight="700">`;
+  for (let i=0;i<N;i++){
+    s += `<text x="${PAD + i*CS + CS/2}" y="${topY}">${i+1}</text>`;
+    s += `<text x="${leftX}" y="${PAD + i*CS + CS/2 + leftDy}">${i+1}</text>`;
+  }
+  s += `</g>`;
+
+  s += `</svg>`;
+  return { svg: s, width: W, height: H };
+}
+
+function openGridExportModal(){
+  $("#gridExportFilename").value = `griglia-${state.size}x${state.size}`;
+  openModal("gridExportModal");
+  setTimeout(() => { const i = $("#gridExportFilename"); if (i){ i.focus(); i.select(); } }, 0);
+}
+
+function exportGridPngFile(filename){
+  const { svg, width, height } = buildGridSvg();
+  const scale = 8;
+  const outName = normalizeExportFilename(filename, "png");
+  const img = new Image();
+  const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    canvas.toBlob(b => {
+      downloadBlob(b, outName);
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    toast("Errore nella conversione PNG.");
+  };
+  img.src = url;
 }
 
 /* Ritorna la dimensione assoluta in unità SVG dell'icona (converte % -> px in
@@ -2442,6 +2547,14 @@ function bindEvents(){
   // Esporta Immagine (modal PNG/SVG + scala)
   bindExportModal();
   $("#btnExportImage").addEventListener("click", openExportModal);
+  $("#btnExportGrid").addEventListener("click", openGridExportModal);
+  $("#btnDoExportGrid").addEventListener("click", () => {
+    exportGridPngFile($("#gridExportFilename").value);
+    closeModal("gridExportModal");
+  });
+  $("#gridExportFilename").addEventListener("keydown", e => {
+    if (e.key === "Enter"){ e.preventDefault(); $("#btnDoExportGrid").click(); }
+  });
 
   // Carica Mappa dal Cloud
   $("#btnLoadCloud").addEventListener("click", openCloudModal);
