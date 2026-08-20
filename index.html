@@ -186,6 +186,7 @@
   <div class="toprow">
     <button class="btn ghost" id="btnUndo" title="Annulla ultima operazione (Ctrl/Cmd+Z)" disabled><span class="k">↶</span> Annulla</button>
     <button class="btn ghost" id="btnImportMurdoku" title="Importa una mappa esportata dal Murdoku Editor"><span class="k">📥</span> Importa da Murdoku</button>
+    <button class="btn ghost" id="btnLoadCloud" title="Carica una mappa dalla cartella 'Mappe generate' del repo GitHub"><span class="k">☁️</span> Carica Mappa dal Cloud</button>
     <button class="btn ghost" id="btnLoadJSON" title="Carica una mappa salvata (.json)"><span class="k">📂</span> Carica Mappa</button>
     <button class="btn ghost" id="btnSaveJSON" title="Salva la mappa corrente in JSON"><span class="k">💾</span> Salva Mappa</button>
     <button class="btn primary" id="btnExportImage" title="Esporta la mappa come immagine (PNG o SVG)"><span class="k">⇩</span> Esporta Immagine</button>
@@ -247,6 +248,7 @@
       <h2>Reset</h2>
       <button class="btn ghost" id="btnClearWalls" style="width:100%; margin-bottom:6px">Rimuovi tutti i muri</button>
       <button class="btn ghost" id="btnClearFills" style="width:100%; margin-bottom:6px">Rimuovi tutti gli sfondi</button>
+      <button class="btn ghost" id="btnClearObjects" style="width:100%; margin-bottom:6px">Rimuovi tutti gli oggetti</button>
       <button class="btn ghost" id="btnClearAll" style="width:100%; color:var(--evidence); border-color:#5c3030">Reimposta tutto</button>
     </div>
   </aside>
@@ -355,6 +357,23 @@
     <div class="mf">
       <button class="btn ghost" data-close-modal>Annulla</button>
       <button class="btn primary" id="btnDoImport">Importa</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="cloudModal">
+  <div class="box">
+    <div class="mh"><h3>Carica mappa dal cloud</h3></div>
+    <div class="mb">
+      <div class="field" style="margin:0">
+        <label for="cloudMapSelect">Mappa</label>
+        <select id="cloudMapSelect" style="background:var(--panel2); color:var(--text); border:1px solid var(--line2); border-radius:7px; padding:7px 9px; font-size:13px" disabled></select>
+        <div class="hint" id="cloudMapHint">Caricamento elenco mappe...</div>
+      </div>
+    </div>
+    <div class="mf">
+      <button class="btn ghost" data-close-modal>Annulla</button>
+      <button class="btn primary" id="btnDoCloudLoad" disabled>Carica</button>
     </div>
   </div>
 </div>
@@ -1758,7 +1777,24 @@ function bindExportModal(){
   });
 }
 
-function serializeState(){
+function serializeState(opts){
+  const trimLibrary = !!(opts && opts.trimLibrary);
+  let iconLibrary = state.icons.library;
+  let bgLibrary = state.bg.library;
+  if (trimLibrary){
+    // Il file scaricato/pubblicato deve contenere solo le icone e gli
+    // sfondi effettivamente usati nella mappa, non l'intera libreria
+    // caricata dall'utente (che può pesare decine di MB e far superare
+    // il limite di dimensione dei file di GitHub).
+    const usedLibIds = new Set(state.icons.placed.map(p => p.libId));
+    iconLibrary = state.icons.library.filter(l => usedLibIds.has(l.id));
+    const usedBgUris = new Set(
+      Object.values(state.areaFills)
+        .filter(f => f && f.type === "svg" && typeof f.value === "string")
+        .map(f => f.value)
+    );
+    bgLibrary = state.bg.library.filter(b => usedBgUris.has(b.dataUri));
+  }
   return {
     app: "murdoku-svg-map",
     version: 4,
@@ -1769,20 +1805,20 @@ function serializeState(){
     nonWalkable: [...state.nonWalkable],
     style: { ...state.style },
     icons: {
-      library: state.icons.library,
+      library: iconLibrary,
       placed: state.icons.placed,
       snap: state.icons.snap,
       unit: state.icons.unit,
       shade: state.icons.shade,
     },
     bg: {
-      library: state.bg.library,
+      library: bgLibrary,
     }
   };
 }
 
 function saveJsonFile(filename){
-  const blob = new Blob([JSON.stringify(serializeState(), null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(serializeState({ trimLibrary: true }), null, 2)], { type: "application/json" });
   let name = String(filename || "").trim();
   if (!name) name = `mappa-${state.size}x${state.size}`;
   if (!/\.json$/i.test(name)) name += ".json";
@@ -1985,6 +2021,67 @@ function downloadBlob(blob, filename){
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click();
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+}
+
+/* --- Carica Mappa dal Cloud (cartella "Mappe generate" su GitHub) --- */
+const CLOUD_MAPS_REPO = "NumaPompilio/Murdoku-Map-Generator";
+const CLOUD_MAPS_BRANCH = "main";
+const CLOUD_MAPS_PATH = "Mappe generate";
+
+async function fetchCloudMapList(){
+  const url = `https://api.github.com/repos/${CLOUD_MAPS_REPO}/contents/${encodeURIComponent(CLOUD_MAPS_PATH)}?ref=${CLOUD_MAPS_BRANCH}`;
+  const res = await fetch(url, { headers: { Accept: "application/vnd.github+json" } });
+  if (!res.ok) throw new Error(`Errore API GitHub (${res.status})`);
+  const items = await res.json();
+  if (!Array.isArray(items)) throw new Error("Risposta inattesa dall'API GitHub.");
+  return items
+    .filter(it => it && it.type === "file" && /\.json$/i.test(it.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function openCloudModal(){
+  const sel = $("#cloudMapSelect");
+  const hint = $("#cloudMapHint");
+  const btn = $("#btnDoCloudLoad");
+  sel.innerHTML = "";
+  sel.disabled = true;
+  btn.disabled = true;
+  hint.textContent = "Caricamento elenco mappe...";
+  openModal("cloudModal");
+  fetchCloudMapList().then(files => {
+    if (!files.length){
+      hint.textContent = "Nessuna mappa trovata nella cartella 'Mappe generate' del repo.";
+      return;
+    }
+    sel.innerHTML = files.map(f =>
+      `<option value="${escapeHtmlAttr(f.download_url)}">${escapeHtmlAttr(f.name.replace(/\.json$/i, ""))}</option>`
+    ).join("");
+    sel.disabled = false;
+    btn.disabled = false;
+    hint.textContent = `${files.length} mappa/e disponibile/i.`;
+  }).catch(err => {
+    hint.textContent = "Errore nel caricamento dell'elenco: " + err.message;
+  });
+}
+
+function doCloudLoad(){
+  const url = $("#cloudMapSelect").value;
+  if (!url) return;
+  const btn = $("#btnDoCloudLoad");
+  const hint = $("#cloudMapHint");
+  btn.disabled = true;
+  hint.textContent = "Caricamento mappa in corso...";
+  fetch(url).then(r => {
+    if (!r.ok) throw new Error(`Errore HTTP ${r.status}`);
+    return r.json();
+  }).then(obj => {
+    pushHistoryNow();
+    loadJsonPayload(obj);
+    closeModal("cloudModal");
+  }).catch(err => {
+    toast("Errore: " + err.message);
+    hint.textContent = "Errore nel caricamento della mappa: " + err.message;
+  }).finally(() => { btn.disabled = false; });
 }
 
 /* --- Import dal Murdoku Editor --- */
@@ -2247,6 +2344,14 @@ function bindEvents(){
     state.areaShades = {};
     render();
   });
+  $("#btnClearObjects").addEventListener("click", () => {
+    if (!confirm("Rimuovere tutti gli oggetti dalla mappa?")) return;
+    pushHistoryNow();
+    state.icons.placed = [];
+    state.icons.selectedId = null;
+    updateIconSelectionUI();
+    render();
+  });
   $("#btnClearAll").addEventListener("click", () => {
     if (!confirm("Reimpostare l'intera mappa (muri, sfondi, icone)?")) return;
     pushHistoryNow();
@@ -2319,6 +2424,10 @@ function bindEvents(){
   // Esporta Immagine (modal PNG/SVG + scala)
   bindExportModal();
   $("#btnExportImage").addEventListener("click", openExportModal);
+
+  // Carica Mappa dal Cloud
+  $("#btnLoadCloud").addEventListener("click", openCloudModal);
+  $("#btnDoCloudLoad").addEventListener("click", doCloudLoad);
 
   // Import Murdoku
   $("#btnImportMurdoku").addEventListener("click", () => {
