@@ -78,6 +78,9 @@
   }
   .val{font-family:var(--mono); color:var(--violet-bright); font-size:13px; min-width:26px; text-align:right}
   .hint{font-size:11px; color:var(--text-faint); line-height:1.5; margin-top:6px}
+  .hint-row{display:flex; align-items:center; gap:8px}
+  .spinner{width:14px; height:14px; flex:none; border-radius:50%; border:2px solid var(--line2); border-top-color:var(--violet-bright); animation:spin .7s linear infinite}
+  @keyframes spin{ to{ transform:rotate(360deg); } }
 
   .tools{display:grid; grid-template-columns:1fr 1fr; gap:7px}
   .tool{
@@ -368,11 +371,14 @@
       <div class="field" style="margin:0">
         <label for="cloudMapSelect">Mappa</label>
         <select id="cloudMapSelect" style="background:var(--panel2); color:var(--text); border:1px solid var(--line2); border-radius:7px; padding:7px 9px; font-size:13px" disabled></select>
-        <div class="hint" id="cloudMapHint">Caricamento elenco mappe...</div>
+        <div class="hint hint-row" id="cloudMapHint">
+          <span class="spinner" id="cloudSpinner" style="display:none"></span>
+          <span id="cloudMapHintText">Caricamento elenco mappe...</span>
+        </div>
       </div>
     </div>
     <div class="mf">
-      <button class="btn ghost" data-close-modal>Annulla</button>
+      <button class="btn ghost" id="btnCloudCancel" data-close-modal>Annulla</button>
       <button class="btn primary" id="btnDoCloudLoad" disabled>Carica</button>
     </div>
   </div>
@@ -2039,38 +2045,50 @@ async function fetchCloudMapList(){
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function setCloudHint(text, showSpinner){
+  $("#cloudMapHintText").textContent = text;
+  $("#cloudSpinner").style.display = showSpinner ? "inline-block" : "none";
+}
+
+// Blocca la chiusura del modal (Annulla / click fuori) mentre è in corso
+// una fetch, così l'utente non può continuare a cliccare in giro pensando
+// che non stia succedendo nulla.
+function setCloudModalLocked(locked){
+  $("#cloudModal").dataset.locked = locked ? "1" : "";
+  $("#btnCloudCancel").disabled = locked;
+  $("#cloudMapSelect").disabled = locked || !$("#cloudMapSelect").options.length;
+}
+
 function openCloudModal(){
   const sel = $("#cloudMapSelect");
-  const hint = $("#cloudMapHint");
   const btn = $("#btnDoCloudLoad");
   sel.innerHTML = "";
-  sel.disabled = true;
   btn.disabled = true;
-  hint.textContent = "Caricamento elenco mappe...";
+  setCloudModalLocked(true);
+  setCloudHint("Caricamento elenco mappe...", true);
   openModal("cloudModal");
   fetchCloudMapList().then(files => {
     if (!files.length){
-      hint.textContent = "Nessuna mappa trovata nella cartella 'Mappe generate' del repo.";
+      setCloudHint("Nessuna mappa trovata nella cartella 'Mappe generate' del repo.", false);
       return;
     }
     sel.innerHTML = files.map(f =>
       `<option value="${escapeHtmlAttr(f.download_url)}">${escapeHtmlAttr(f.name.replace(/\.json$/i, ""))}</option>`
     ).join("");
-    sel.disabled = false;
     btn.disabled = false;
-    hint.textContent = `${files.length} mappa/e disponibile/i.`;
+    setCloudHint(`${files.length} mappa/e disponibile/i.`, false);
   }).catch(err => {
-    hint.textContent = "Errore nel caricamento dell'elenco: " + err.message;
-  });
+    setCloudHint("Errore nel caricamento dell'elenco: " + err.message, false);
+  }).finally(() => { setCloudModalLocked(false); });
 }
 
 function doCloudLoad(){
   const url = $("#cloudMapSelect").value;
   if (!url) return;
   const btn = $("#btnDoCloudLoad");
-  const hint = $("#cloudMapHint");
   btn.disabled = true;
-  hint.textContent = "Caricamento mappa in corso...";
+  setCloudModalLocked(true);
+  setCloudHint("Caricamento mappa in corso...", true);
   fetch(url).then(r => {
     if (!r.ok) throw new Error(`Errore HTTP ${r.status}`);
     return r.json();
@@ -2080,8 +2098,8 @@ function doCloudLoad(){
     closeModal("cloudModal");
   }).catch(err => {
     toast("Errore: " + err.message);
-    hint.textContent = "Errore nel caricamento della mappa: " + err.message;
-  }).finally(() => { btn.disabled = false; });
+    setCloudHint("Errore nel caricamento della mappa: " + err.message, false);
+  }).finally(() => { btn.disabled = false; setCloudModalLocked(false); });
 }
 
 /* --- Import dal Murdoku Editor --- */
@@ -2445,12 +2463,14 @@ function bindEvents(){
   });
   $$("[data-close-modal]").forEach(el => {
     el.addEventListener("click", () => {
-      el.closest(".modal").classList.remove("show");
+      const m = el.closest(".modal");
+      if (m.dataset.locked === "1") return;
+      m.classList.remove("show");
     });
   });
   $$(".modal").forEach(m => {
     m.addEventListener("click", e => {
-      if (e.target === m) m.classList.remove("show");
+      if (e.target === m && m.dataset.locked !== "1") m.classList.remove("show");
     });
   });
 }
